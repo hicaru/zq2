@@ -305,9 +305,9 @@ impl Db {
 
         Ok(Db {
             db: Arc::new(Mutex::new(connection)),
-            state_cache: Arc::new(Mutex::new(LruCache::new(state_cache_size))),
+            state_cache: Arc::new(Mutex::new(LruCache::new(4096))), // 4GB for LruCache
             path,
-            executable_blocks_height,
+            executable_blocks_height: 12288,
         })
     }
 
