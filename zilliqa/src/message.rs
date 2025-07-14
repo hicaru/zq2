@@ -854,3 +854,90 @@ impl Block {
             .finalize()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use libp2p::{
+        SwarmBuilder,
+        core::multiaddr::Multiaddr,
+        futures::StreamExt,
+        identity, noise,
+        swarm::{Swarm, SwarmEvent},
+        tcp, yamux,
+    };
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn test_block_sync() -> Result<()> {
+        // Create a new libp2p swarm
+        let local_key = identity::Keypair::generate_ed25519();
+        let local_peer_id = PeerId::from(local_key.public());
+
+        let swarm = SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )?
+            .build();
+
+        let mut swarm = swarm;
+
+        // Connect to the remote address
+        let remote_addr: Multiaddr = "/ip4/57.129.24.137/tcp/3333".parse()?;
+        swarm.dial(remote_addr.clone())?;
+
+        // Create a block request
+        let block_request = BlockRequest {
+            from_view: 0,
+            to_view: 10, // Requesting first 10 blocks
+        };
+
+        // Send the block request
+        swarm
+            .behaviour_mut()
+            .send_message(ExternalMessage::BlockRequest(block_request));
+
+        // Wait for response or timeout
+        let result = timeout(Duration::from_secs(30), async {
+            loop {
+                match swarm.select_next_some().await {
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        println!("Connected to peer: {}", peer_id);
+                    }
+                    SwarmEvent::Behaviour(ExternalMessage::BlockResponse(response)) => {
+                        println!(
+                            "Received block response with {} proposals",
+                            response.proposals.len()
+                        );
+                        return Ok(response);
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                        return Err(anyhow!(
+                            "Connection closed unexpectedly with peer: {}",
+                            peer_id
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Ok(response)) => {
+                assert!(
+                    !response.proposals.is_empty(),
+                    "Received empty block response"
+                );
+                println!("Successfully received {} blocks", response.proposals.len());
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(anyhow!("Timed out waiting for block response")),
+        }
+    }
+}
